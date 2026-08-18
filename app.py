@@ -341,10 +341,20 @@ def init_database():
 # SQLAlchemy's metadata is empty and create_all() silently creates no tables.
 import models  # noqa: F401,E402
 
-# Initialize database when app starts
-try:
-    with app.app_context():
-        init_database()
-except Exception as e:
-    print(f"Database initialization warning: {e}")
-    # Continue anyway - database will be initialized on first request
+# Database initialization
+#
+# IMPORTANT:
+# Do not initialize the database while Vercel is importing this module.
+# Vercel imports the Flask app to create a serverless function, and
+# connecting/migrating the database during import can crash the function.
+#
+# Database initialization should be performed separately when required.
+
+def initialize_app_database():
+    """Initialize the database explicitly when needed."""
+    try:
+        with app.app_context():
+            return init_database()
+    except Exception as e:
+        app.logger.error(f"Database initialization failed: {e}")
+        return False
