@@ -1,5 +1,5 @@
 
-from app import app, socketio
+from sqlalchemy import Index, text, UniqueConstraint
 import routes  # noqa: F401
 import socket_events  # noqa: F401
 
