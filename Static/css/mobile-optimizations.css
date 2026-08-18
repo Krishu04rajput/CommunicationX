@@ -1,0 +1,115 @@
+
+/* Mobile-specific optimizations for CommunicationX */
+
+/* Reduce animations on mobile for better performance */
+@media (max-width: 768px) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    
+    /* Keep essential animations */
+    .sidebar {
+        transition-duration: 0.3s !important;
+    }
+    
+    .sidebar-overlay {
+        transition-duration: 0.3s !important;
+    }
+}
+
+/* Improve scrolling performance */
+.messages-container,
+.server-list,
+.user-list {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+/* Reduce memory usage */
+@media (max-width: 768px) {
+    .message {
+        contain: layout style paint;
+    }
+    
+    .server-item,
+    .user-item {
+        contain: layout style;
+    }
+}
+
+/* Mobile keyboard adjustments */
+@media (max-width: 768px) {
+    .message-input-container {
+        padding-bottom: env(safe-area-inset-bottom, 1rem);
+    }
+    
+    .content-area {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+}
+
+/* Prevent horizontal scroll */
+body {
+    overflow-x: hidden;
+}
+
+/* Better mobile form handling */
+@media (max-width: 768px) {
+    .form-input,
+    .message-input {
+        -webkit-appearance: none;
+        border-radius: 8px;
+    }
+    
+    /* Prevent zoom on input focus for iOS */
+    input[type="text"],
+    input[type="email"],
+    input[type="password"],
+    textarea {
+        font-size: 16px !important;
+    }
+}
+
+/* Mobile-friendly modals */
+@media (max-width: 768px) {
+    .modal-content {
+        margin: 1rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+        border-radius: 12px;
+    }
+}
+
+/* Optimize touch interactions */
+@media (hover: none) and (pointer: coarse) {
+    .server-item:hover,
+    .user-item:hover,
+    .message:hover {
+        background-color: transparent;
+    }
+    
+    .server-item:active,
+    .user-item:active {
+        background-color: rgb(var(--tertiary-bg));
+        transform: scale(0.98);
+    }
+}
+
+/* Safe area handling for notched devices */
+@supports (padding: max(0px)) {
+    .content-header {
+        padding-top: max(1rem, env(safe-area-inset-top));
+    }
+    
+    .mobile-sidebar-toggle {
+        top: max(1rem, env(safe-area-inset-top));
+        left: max(1rem, env(safe-area-inset-left));
+    }
+    
+    .message-input-container {
+        padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+}

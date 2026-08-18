@@ -1,0 +1,212 @@
+/* Floating Download Button Styles */
+.floating-download-btn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+    opacity: 0.9;
+}
+
+.floating-download-btn:hover {
+    transform: translateY(-3px);
+    opacity: 1;
+}
+
+.download-link {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 60px;
+    height: 60px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 50%;
+    color: white !important;
+    text-decoration: none;
+    font-size: 20px;
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+    transition: all 0.3s ease;
+    overflow: hidden;
+    position: relative;
+}
+
+.download-link:hover {
+    color: white !important;
+    text-decoration: none;
+    background: linear-gradient(135deg, #5a6fd8 0%, #6a42a6 100%);
+    box-shadow: 0 8px 30px rgba(102, 126, 234, 0.6);
+    transform: scale(1.1);
+    width: auto;
+    padding: 0 20px;
+    border-radius: 30px;
+}
+
+.download-link .fas {
+    transition: all 0.3s ease;
+}
+
+.download-text {
+    font-size: 14px;
+    font-weight: 600;
+    margin-left: 10px;
+    opacity: 0;
+    transform: translateX(-20px);
+    transition: all 0.3s ease;
+    white-space: nowrap;
+}
+
+.download-link:hover .download-text {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.download-link:hover .fas {
+    transform: scale(1.1);
+}
+
+/* Animation effect */
+.download-link::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: all 0.6s ease;
+}
+
+.download-link:hover::before {
+    width: 100%;
+    height: 100%;
+}
+
+/* Pulse animation */
+@keyframes downloadPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(102, 126, 234, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(102, 126, 234, 0);
+    }
+}
+
+.download-link {
+    animation: downloadPulse 2s infinite;
+}
+
+.download-link:hover {
+    animation: none;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+    .floating-download-btn {
+        bottom: 80px; /* Move up to avoid mobile browser controls */
+        right: 15px;
+    }
+    
+    .download-link {
+        width: 50px;
+        height: 50px;
+        font-size: 16px;
+    }
+    
+    .download-link:hover {
+        width: 50px;
+        border-radius: 50%;
+        padding: 0;
+    }
+    
+    .download-text {
+        display: none; /* Hide text on mobile */
+    }
+}
+
+/* Hide on download page */
+body.download-page .floating-download-btn {
+    display: none;
+}
+
+/* Custom positioning for certain pages */
+.call-screen ~ .floating-download-btn,
+.video-call-container ~ .floating-download-btn {
+    bottom: 80px; /* Move up when call controls are present */
+}
+
+/* Dark theme compatibility */
+@media (prefers-color-scheme: dark) {
+    .download-link {
+        background: linear-gradient(135deg, #7289da 0%, #99aab5 100%);
+        box-shadow: 0 4px 20px rgba(114, 137, 218, 0.4);
+    }
+    
+    .download-link:hover {
+        background: linear-gradient(135deg, #677bc4 0%, #8a95a5 100%);
+        box-shadow: 0 8px 30px rgba(114, 137, 218, 0.6);
+    }
+}
+
+/* Accessibility improvements */
+.download-link:focus {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+.download-link:focus:not(:focus-visible) {
+    outline: none;
+}
+
+.download-link:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+}
+
+/* Tooltip effect */
+.floating-download-btn::after {
+    content: 'Download App';
+    position: absolute;
+    bottom: 70px;
+    right: 0;
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s ease;
+    transform: translateY(10px);
+}
+
+.floating-download-btn:hover::after {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Arrow for tooltip */
+.floating-download-btn::before {
+    content: '';
+    position: absolute;
+    bottom: 60px;
+    right: 20px;
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid rgba(0, 0, 0, 0.8);
+    opacity: 0;
+    transition: all 0.3s ease;
+    transform: translateY(10px);
+}
+
+.floating-download-btn:hover::before {
+    opacity: 1;
+    transform: translateY(0);
+}
