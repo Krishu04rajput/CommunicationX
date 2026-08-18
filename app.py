@@ -1,360 +1,804 @@
-# Applying the provided changes to fix database initialization and add migration functions.
 import os
 import logging
+
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO
 from sqlalchemy.orm import DeclarativeBase
-from werkzeug.middleware.proxy_fix import ProxyFix
-# Rate limiting removed for development
-from urllib.parse import urlparse
-import sqlite3
 from sqlalchemy import inspect as sqlalchemy_inspect, text
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-# Configure logging with reduced verbosity for performance
+
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(
-    level=logging.WARNING,  # Reduced from INFO to WARNING
-    format='%(levelname)s - %(message)s'  # Simplified format
+    level=logging.WARNING,
+    format="%(levelname)s - %(message)s"
 )
+
+
+# ============================================================
+# DATABASE BASE
+# ============================================================
 
 class Base(DeclarativeBase):
     pass
 
+
 db = SQLAlchemy(model_class=Base)
 
-# Create the app
+
+# ============================================================
+# FLASK APP
+# ============================================================
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-key-change-in-production")
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-# Security configurations
-app.config['WTF_CSRF_ENABLED'] = True
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour
+app.secret_key = os.environ.get(
+    "SESSION_SECRET",
+    "dev-secret-key-change-in-production"
+)
 
-# Database configuration.
-# GitHub stores the source code; the application stores data in this database.
-# Set DATABASE_URL for PostgreSQL in production. SQLite is the zero-config local default.
+app.wsgi_app = ProxyFix(
+    app.wsgi_app,
+    x_proto=1,
+    x_host=1
+)
+
+
+# ============================================================
+# SECURITY
+# ============================================================
+
+app.config["WTF_CSRF_ENABLED"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = 3600
+
+
+# ============================================================
+# DATABASE CONFIGURATION
+# ============================================================
+
 database_url = os.environ.get("DATABASE_URL", "").strip()
+
 if database_url:
-    # Normalize common postgres:// URLs for SQLAlchemy 2.x.
+
+    # Convert old postgres:// URLs to postgresql://
     if database_url.startswith("postgres://"):
         database_url = "postgresql://" + database_url[len("postgres://"):]
+
     app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-        "pool_recycle": 300,
         "pool_pre_ping": True,
+        "pool_recycle": 300,
+        "pool_size": 5,
+        "max_overflow": 2,
     }
+
 else:
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///communicationx.db"
+
+    # Local development fallback
+    app.config["SQLALCHEMY_DATABASE_URI"] = (
+        "sqlite:///communicationx.db"
+    )
+
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {}
+
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# File upload configuration
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB max file size
 
-# Rate limiting disabled for development
+# ============================================================
+# FILE UPLOAD
+# ============================================================
+
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
+
+
+# ============================================================
+# RATE LIMITING
+# ============================================================
+
 limiter = None
 
-# Initialize extensions
+
+# ============================================================
+# INITIALIZE DATABASE
+# ============================================================
+
 db.init_app(app)
-socketio = SocketIO(app, 
-                   cors_allowed_origins="*", 
-                   async_mode='threading',
-                   logger=False, 
-                   engineio_logger=False,
-                   ping_timeout=60,
-                   ping_interval=25,
-                   allow_upgrades=True,
-                   transports=['websocket', 'polling'])
+
+
+# ============================================================
+# SOCKET.IO
+# ============================================================
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading",
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=60,
+    ping_interval=25,
+    allow_upgrades=True,
+    transports=["websocket", "polling"],
+)
+
+
+# ============================================================
+# DATABASE TYPE
+# ============================================================
+
+def is_postgresql():
+    """
+    Return True when the application is using PostgreSQL.
+    """
+    uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+
+    return (
+        uri.startswith("postgresql://")
+        or uri.startswith("postgresql+")
+        or uri.startswith("postgres://")
+    )
+
+
+# ============================================================
+# DATABASE SCHEMA CHECK
+# ============================================================
 
 def check_database_schema():
-    """Check if database schema is up to date"""
+    """
+    Check whether the important database columns exist.
+
+    This function does NOT modify the database.
+    """
+
     try:
+
         inspector = sqlalchemy_inspect(db.engine)
-        table_names = inspector.get_table_names()
 
-        # Check if server_membership table exists
-        if 'server_membership' not in table_names:
-            return False  # Table doesn't exist, need migration
+        table_names = set(
+            inspector.get_table_names()
+        )
 
-        # Check for critical columns
+        # If the table doesn't exist,
+        # create_all()/migration must handle it.
+        if "server_membership" not in table_names:
+            return False
+
         columns = {
-            column['name']
-            for column in inspector.get_columns('server_membership')
+            column["name"]
+            for column in inspector.get_columns(
+                "server_membership"
+            )
         }
 
-        required_columns = ['custom_status', 'activity_status', 'boost_count', 'flags']
-        missing = [col for col in required_columns if col not in columns]
+        required_columns = {
+            "custom_status",
+            "activity_status",
+            "boost_count",
+            "flags",
+        }
 
-        return len(missing) == 0
+        return required_columns.issubset(columns)
+
     except Exception as e:
-        print(f"Schema check error: {e}")
+
+        app.logger.warning(
+            f"Schema check failed: {e}"
+        )
+
         return False
 
-def fix_direct_messages_table():
-    """Fix DirectMessage table schema issues"""
-    try:
-        from sqlalchemy import text
-        
-        # First, check if we're using PostgreSQL or SQLite
-        db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-        is_postgres = 'postgresql' in db_uri or 'postgres' in db_uri
-        
-        if is_postgres:
-            # For PostgreSQL, recreate the table with proper schema
-            with db.engine.connect() as conn:
-                # Drop and recreate the direct_messages table
-                conn.execute(text('DROP TABLE IF EXISTS direct_messages CASCADE'))
-                conn.execute(text('''
-                    CREATE TABLE direct_messages (
-                        id SERIAL PRIMARY KEY,
-                        content TEXT NOT NULL,
-                        sender_id INTEGER NOT NULL REFERENCES users(id),
-                        recipient_id INTEGER NOT NULL REFERENCES users(id),
-                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        read_at TIMESTAMP,
-                        status VARCHAR(20) NOT NULL DEFAULT 'sent',
-                        delivered_at TIMESTAMP
-                    )
-                '''))
-                
-                # Create indexes
-                conn.execute(text('CREATE INDEX idx_dm_conversation ON direct_messages (sender_id, recipient_id, created_at)'))
-                conn.execute(text('CREATE INDEX idx_dm_recipient_unread ON direct_messages (recipient_id, read_at, created_at)'))
-                conn.execute(text('CREATE INDEX idx_dm_user_timeline ON direct_messages (sender_id, created_at)'))
-                
-                conn.commit()
-                print("DirectMessage table recreated with correct PostgreSQL schema")
-        else:
-            # SQLite fallback
-            db_path = db_uri.replace('sqlite:///', '')
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('DROP TABLE IF EXISTS direct_messages')
-            cursor.execute('''
-                CREATE TABLE direct_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    content TEXT NOT NULL,
-                    sender_id INTEGER NOT NULL,
-                    recipient_id INTEGER NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    read_at TIMESTAMP,
-                    status VARCHAR(20) NOT NULL DEFAULT 'sent',
-                    delivered_at TIMESTAMP,
-                    FOREIGN KEY (sender_id) REFERENCES users (id),
-                    FOREIGN KEY (recipient_id) REFERENCES users (id)
-                )
-            ''')
-            
-            # Create indexes
-            cursor.execute('CREATE INDEX idx_dm_conversation ON direct_messages (sender_id, recipient_id, created_at)')
-            cursor.execute('CREATE INDEX idx_dm_recipient_unread ON direct_messages (recipient_id, read_at, created_at)')
-            cursor.execute('CREATE INDEX idx_dm_user_timeline ON direct_messages (sender_id, created_at)')
-            
-            conn.commit()
-            conn.close()
-            print("DirectMessage table recreated with correct SQLite schema")
-            
-    except Exception as e:
-        print(f"Error fixing DirectMessage table: {e}")
-        return False
-    
-    return True
 
-def fix_shared_files_table():
-    """Fix SharedFile table schema issues"""
-    try:
-        from sqlalchemy import text
-        
-        # First, check if we're using PostgreSQL or SQLite
-        db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-        is_postgres = 'postgresql' in db_uri or 'postgres' in db_uri
-        
-        if is_postgres:
-            # For PostgreSQL, recreate the table with proper schema
-            with db.engine.connect() as conn:
-                # Drop and recreate the shared_files table
-                conn.execute(text('DROP TABLE IF EXISTS shared_files CASCADE'))
-                conn.execute(text('''
-                    CREATE TABLE shared_files (
-                        id SERIAL PRIMARY KEY,
-                        filename VARCHAR(255) NOT NULL,
-                        original_filename VARCHAR(255) NOT NULL,
-                        file_data BYTEA,
-                        file_path VARCHAR(500),
-                        file_size BIGINT NOT NULL,
-                        mime_type VARCHAR(100) NOT NULL,
-                        uploader_id INTEGER NOT NULL REFERENCES users(id),
-                        server_id INTEGER REFERENCES server(id),
-                        channel_id INTEGER REFERENCES channel(id),
-                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        is_compressed BOOLEAN DEFAULT FALSE,
-                        checksum VARCHAR(64)
-                    )
-                '''))
-                
-                # Create indexes
-                conn.execute(text('CREATE INDEX idx_file_type_size ON shared_files (mime_type, file_size)'))
-                conn.execute(text('CREATE INDEX idx_server_files ON shared_files (server_id, created_at)'))
-                conn.execute(text('CREATE INDEX idx_channel_files ON shared_files (channel_id, created_at)'))
-                conn.execute(text('CREATE INDEX idx_user_uploads ON shared_files (uploader_id, created_at)'))
-                
-                conn.commit()
-                print("SharedFile table recreated with correct PostgreSQL schema")
-        else:
-            # For SQLite
-            db_path = app.config.get('SQLALCHEMY_DATABASE_URI', 'sqlite:///communicationx.db').replace('sqlite:///', '')
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Drop existing table
-            cursor.execute('DROP TABLE IF EXISTS shared_files')
-            
-            # Recreate table with correct schema
-            cursor.execute('''
-                CREATE TABLE shared_files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    filename VARCHAR(255) NOT NULL,
-                    original_filename VARCHAR(255) NOT NULL,
-                    file_data BLOB,
-                    file_path VARCHAR(500),
-                    file_size BIGINT NOT NULL,
-                    mime_type VARCHAR(100) NOT NULL,
-                    uploader_id INTEGER NOT NULL REFERENCES users(id),
-                    server_id INTEGER REFERENCES server(id),
-                    channel_id INTEGER REFERENCES channel(id),
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    is_compressed BOOLEAN DEFAULT 0,
-                    checksum VARCHAR(64)
-                )
-            ''')
-            
-            # Create indexes
-            cursor.execute('CREATE INDEX idx_file_type_size ON shared_files (mime_type, file_size)')
-            cursor.execute('CREATE INDEX idx_server_files ON shared_files (server_id, created_at)')
-            cursor.execute('CREATE INDEX idx_channel_files ON shared_files (channel_id, created_at)')
-            cursor.execute('CREATE INDEX idx_user_uploads ON shared_files (uploader_id, created_at)')
-            
-            conn.commit()
-            conn.close()
-            print("SharedFile table recreated with correct SQLite schema")
-            
-    except Exception as e:
-        print(f"Error fixing SharedFile table: {e}")
-        return False
-    
-    return True
+# ============================================================
+# MIGRATION DEFINITIONS
+# ============================================================
+
+MIGRATION_COLUMNS = {
+
+    "server_membership": [
+
+        ("custom_status", "VARCHAR(128)"),
+
+        (
+            "activity_status",
+            "VARCHAR(20) DEFAULT 'online'"
+        ),
+
+        (
+            "boost_count",
+            "INTEGER DEFAULT 0"
+        ),
+
+        (
+            "flags",
+            "INTEGER DEFAULT 0"
+        ),
+
+        (
+            "is_admin",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "can_manage_server",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "can_manage_channels",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "can_kick_members",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "can_ban_members",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+    ],
+
+
+    "server": [
+
+        (
+            "password_hash",
+            "VARCHAR(256)"
+        ),
+
+        (
+            "password_enabled",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "password_set_by",
+            "INTEGER"
+        ),
+
+        (
+            "password_set_at",
+            "TIMESTAMP"
+        ),
+
+        (
+            "is_locked",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "locked_by",
+            "INTEGER"
+        ),
+
+        (
+            "locked_at",
+            "TIMESTAMP"
+        ),
+
+        (
+            "lock_reason",
+            "TEXT"
+        ),
+    ],
+
+
+    "users": [
+
+        (
+            "is_admin",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "is_super_admin",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "admin_permissions",
+            "TEXT"
+        ),
+
+        (
+            "is_banned",
+            "BOOLEAN DEFAULT FALSE"
+        ),
+
+        (
+            "ban_reason",
+            "TEXT"
+        ),
+
+        (
+            "banned_by",
+            "INTEGER"
+        ),
+
+        (
+            "banned_at",
+            "TIMESTAMP"
+        ),
+    ],
+}
+
+
+# ============================================================
+# RUN MIGRATION
+# ============================================================
 
 def run_migration():
-    """Run database migration to add missing columns"""
+    """
+    Create missing tables and add missing columns.
+
+    Safe for PostgreSQL and SQLite.
+    """
+
     try:
-        # Ensure all tables exist first
-        db.create_all()
 
-        # Always check and add missing columns regardless of table existence
-        print("Running database migration to add missing columns...")
+        with app.app_context():
 
-        migration_columns = {
-            'server_membership': [
-                ('custom_status', 'VARCHAR(128)'),
-                ('activity_status', "VARCHAR(20) DEFAULT 'online'"),
-                ('boost_count', 'INTEGER DEFAULT 0'),
-                ('flags', 'INTEGER DEFAULT 0'),
-                ('is_admin', 'BOOLEAN DEFAULT FALSE'),
-                ('can_manage_server', 'BOOLEAN DEFAULT FALSE'),
-                ('can_manage_channels', 'BOOLEAN DEFAULT FALSE'),
-                ('can_kick_members', 'BOOLEAN DEFAULT FALSE'),
-                ('can_ban_members', 'BOOLEAN DEFAULT FALSE'),
-            ],
-            'server': [
-                ('password_hash', 'VARCHAR(256)'),
-                ('password_enabled', 'BOOLEAN DEFAULT FALSE'),
-                ('password_set_by', 'INTEGER'),
-                ('password_set_at', 'DATETIME'),
-                ('is_locked', 'BOOLEAN DEFAULT FALSE'),
-                ('locked_by', 'INTEGER'),
-                ('locked_at', 'DATETIME'),
-                ('lock_reason', 'TEXT'),
-            ],
-            'users': [
-                ('is_admin', 'BOOLEAN DEFAULT FALSE'),
-                ('is_super_admin', 'BOOLEAN DEFAULT FALSE'),
-                ('admin_permissions', 'TEXT'),
-                ('is_banned', 'BOOLEAN DEFAULT FALSE'),
-                ('ban_reason', 'TEXT'),
-                ('banned_by', 'INTEGER'),
-                ('banned_at', 'DATETIME'),
-            ],
-        }
+            # First create tables defined by SQLAlchemy models.
+            db.create_all()
 
-        inspector = sqlalchemy_inspect(db.engine)
-        existing_tables = set(inspector.get_table_names())
-        for table_name, columns in migration_columns.items():
-            if table_name not in existing_tables:
-                continue
+            inspector = sqlalchemy_inspect(
+                db.engine
+            )
 
-            existing_columns = {
-                column['name']
-                for column in inspector.get_columns(table_name)
-            }
-            for column_name, column_definition in columns:
-                if column_name in existing_columns:
+            existing_tables = set(
+                inspector.get_table_names()
+            )
+
+            print("Checking database migrations...")
+
+            for table_name, columns in MIGRATION_COLUMNS.items():
+
+                if table_name not in existing_tables:
+                    print(
+                        f"Skipping {table_name}: table does not exist."
+                    )
                     continue
-                with db.engine.begin() as conn:
-                    conn.execute(text(
-                        f'ALTER TABLE "{table_name}" '
-                        f'ADD COLUMN "{column_name}" {column_definition}'
-                    ))
-                print(f"Added column {column_name} to {table_name}")
-                existing_columns.add(column_name)
 
-        print("Migration completed successfully")
-        return True
+                existing_columns = {
+                    column["name"]
+                    for column in inspector.get_columns(
+                        table_name
+                    )
+                }
+
+                for column_name, column_definition in columns:
+
+                    if column_name in existing_columns:
+                        continue
+
+                    print(
+                        f"Adding {table_name}.{column_name}..."
+                    )
+
+                    # PostgreSQL and SQLite both support
+                    # ALTER TABLE ADD COLUMN.
+                    statement = text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" '
+                        f'{column_definition}'
+                    )
+
+                    try:
+
+                        with db.engine.begin() as conn:
+                            conn.execute(statement)
+
+                        existing_columns.add(
+                            column_name
+                        )
+
+                        print(
+                            f"Added {table_name}.{column_name}"
+                        )
+
+                    except Exception as column_error:
+
+                        # If another request/process added it
+                        # at the same time, don't crash.
+                        error_text = str(
+                            column_error
+                        ).lower()
+
+                        if (
+                            "already exists" in error_text
+                            or "duplicate column" in error_text
+                        ):
+                            print(
+                                f"{table_name}.{column_name} "
+                                "already exists."
+                            )
+                            continue
+
+                        raise
+
+            print("Database migration completed.")
+
+            return True
 
     except Exception as e:
-        print(f"Migration failed: {e}")
+
+        app.logger.error(
+            f"Database migration failed: {e}"
+        )
+
         return False
+
+
+# ============================================================
+# DATABASE INITIALIZATION
+# ============================================================
 
 def init_database():
-    """Initialize database tables"""
-    try:
-        with app.app_context():
-            # Always try to create tables first
-            db.create_all()
-            
-            # Check if database needs migration for missing columns
-            if not check_database_schema():
-                print("Database schema outdated, running migration...")
-                run_migration()
-            else:
-                print("Database already migrated.")
+    """
+    Initialize the database.
 
-            print("Database tables initialized successfully")
+    IMPORTANT:
+    This function is NOT automatically called during module import.
+    """
+
+    try:
+
+        with app.app_context():
+
+            print("Initializing database...")
+
+            # Create all tables from models.py
+            db.create_all()
+
+            # Check schema
+            if not check_database_schema():
+
+                print(
+                    "Database schema requires migration."
+                )
+
+                if not run_migration():
+
+                    print(
+                        "Database migration failed."
+                    )
+
+                    return False
+
+            else:
+
+                print(
+                    "Database schema is up to date."
+                )
+
+            print(
+                "Database initialization completed successfully."
+            )
+
             return True
+
     except Exception as e:
-        print(f"Database initialization error: {e}")
+
+        app.logger.error(
+            f"Database initialization error: {e}"
+        )
+
         return False
 
-# Import model definitions before initializing the database. Without this,
-# SQLAlchemy's metadata is empty and create_all() silently creates no tables.
-import models  # noqa: F401,E402
 
-# Database initialization
+# ============================================================
+# OPTIONAL TABLE FIX FUNCTIONS
+# ============================================================
 #
 # IMPORTANT:
-# Do not initialize the database while Vercel is importing this module.
-# Vercel imports the Flask app to create a serverless function, and
-# connecting/migrating the database during import can crash the function.
+# These functions are NOT automatically executed.
 #
-# Database initialization should be performed separately when required.
+# Do NOT automatically DROP tables on Vercel/Neon because
+# that would destroy existing data.
+#
+# They are kept here only if you specifically need them later.
+# ============================================================
+
+
+def fix_direct_messages_table():
+    """
+    Recreate direct_messages table.
+
+    WARNING:
+    This DROPS existing direct_messages data.
+
+    Only run manually if the table is genuinely corrupted.
+    """
+
+    try:
+
+        with app.app_context():
+
+            if not is_postgresql():
+
+                print(
+                    "This repair function is intended "
+                    "for PostgreSQL."
+                )
+
+                return False
+
+            with db.engine.begin() as conn:
+
+                conn.execute(
+                    text(
+                        "DROP TABLE IF EXISTS "
+                        "direct_messages CASCADE"
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE direct_messages (
+                            id SERIAL PRIMARY KEY,
+                            content TEXT NOT NULL,
+                            sender_id INTEGER NOT NULL
+                                REFERENCES users(id),
+                            recipient_id INTEGER NOT NULL
+                                REFERENCES users(id),
+                            created_at TIMESTAMP NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            read_at TIMESTAMP,
+                            status VARCHAR(20) NOT NULL
+                                DEFAULT 'sent',
+                            delivered_at TIMESTAMP
+                        )
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_dm_conversation
+                        ON direct_messages
+                        (sender_id, recipient_id, created_at)
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_dm_recipient_unread
+                        ON direct_messages
+                        (recipient_id, read_at, created_at)
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_dm_user_timeline
+                        ON direct_messages
+                        (sender_id, created_at)
+                        """
+                    )
+                )
+
+            print(
+                "direct_messages table recreated."
+            )
+
+            return True
+
+    except Exception as e:
+
+        app.logger.error(
+            f"Failed to fix direct_messages: {e}"
+        )
+
+        return False
+
+
+def fix_shared_files_table():
+    """
+    Recreate shared_files table.
+
+    WARNING:
+    This DROPS existing shared_files data.
+
+    Only run manually if the table is genuinely corrupted.
+    """
+
+    try:
+
+        with app.app_context():
+
+            if not is_postgresql():
+
+                print(
+                    "This repair function is intended "
+                    "for PostgreSQL."
+                )
+
+                return False
+
+            with db.engine.begin() as conn:
+
+                conn.execute(
+                    text(
+                        "DROP TABLE IF EXISTS "
+                        "shared_files CASCADE"
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE shared_files (
+                            id SERIAL PRIMARY KEY,
+                            filename VARCHAR(255) NOT NULL,
+                            original_filename VARCHAR(255) NOT NULL,
+                            file_data BYTEA,
+                            file_path VARCHAR(500),
+                            file_size BIGINT NOT NULL,
+                            mime_type VARCHAR(100) NOT NULL,
+                            uploader_id INTEGER NOT NULL
+                                REFERENCES users(id),
+                            server_id INTEGER
+                                REFERENCES server(id),
+                            channel_id INTEGER
+                                REFERENCES channel(id),
+                            created_at TIMESTAMP NOT NULL
+                                DEFAULT CURRENT_TIMESTAMP,
+                            is_compressed BOOLEAN
+                                DEFAULT FALSE,
+                            checksum VARCHAR(64)
+                        )
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_file_type_size
+                        ON shared_files
+                        (mime_type, file_size)
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_server_files
+                        ON shared_files
+                        (server_id, created_at)
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_channel_files
+                        ON shared_files
+                        (channel_id, created_at)
+                        """
+                    )
+                )
+
+                conn.execute(
+                    text(
+                        """
+                        CREATE INDEX
+                        idx_user_uploads
+                        ON shared_files
+                        (uploader_id, created_at)
+                        """
+                    )
+                )
+
+            print(
+                "shared_files table recreated."
+            )
+
+            return True
+
+    except Exception as e:
+
+        app.logger.error(
+            f"Failed to fix shared_files: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# IMPORT MODELS
+# ============================================================
+#
+# This must happen BEFORE create_all().
+# Otherwise SQLAlchemy may have no model metadata.
+# ============================================================
+
+import models  # noqa: E402,F401
+
+
+# ============================================================
+# EXPLICIT DATABASE INITIALIZATION
+# ============================================================
+#
+# DO NOT call init_database() here.
+#
+# Vercel imports this module when starting the serverless
+# function. Running database migrations during import can
+# cause deployment/runtime failures.
+#
+# Call initialize_app_database() manually when you actually
+# want to initialize/migrate the database.
+# ============================================================
+
 
 def initialize_app_database():
-    """Initialize the database explicitly when needed."""
+    """
+    Explicitly initialize/migrate the database.
+
+    Returns:
+        True  -> success
+        False -> failure
+    """
+
     try:
-        with app.app_context():
-            return init_database()
+
+        return init_database()
+
     except Exception as e:
-        app.logger.error(f"Database initialization failed: {e}")
+
+        app.logger.error(
+            f"Database initialization failed: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+def database_is_available():
+    """
+    Test whether the database connection works.
+    """
+
+    try:
+
+        with app.app_context():
+
+            with db.engine.connect() as conn:
+
+                conn.execute(
+                    text("SELECT 1")
+                )
+
+            return True
+
+    except Exception as e:
+
+        app.logger.warning(
+            f"Database connection failed: {e}"
+        )
+
         return False
